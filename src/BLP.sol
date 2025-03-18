@@ -33,6 +33,7 @@ contract BLP is ReentrancyGuard {
     error BLP__InvalidDepositTokenAddress(address token);
     error BLP__InvalidCollateralTokenAddress(address token);
     error BLP__AmountMustBeMoreThanZero();
+    error BLP__InsufficentDepositToWithdraw();
 
     constructor(address _weth, address _usdt) {
         wETH = IERC20(_weth);
@@ -68,7 +69,37 @@ contract BLP is ReentrancyGuard {
         emit BLP_USDT_Deposited(amount);
     }
 
-    function withdrawLiquidityInUsd(uint256 amount) public {}
+    function withdrawLiquidityInUsd(uint256 amount) public nonReentrant moreThanZero(amount) {
+        uint256 totalValue = getTotalValueOfDeposit();
+        require(amount <= totalValue, "BLP__InsufficientDepositToWithdraw");
+
+        uint256 remainingAmount = amount;
+        Deposit[] storage deposits = userDeposits[msg.sender];
+        uint256 length = deposits.length;
+        for (uint256 i = 0; i < length; i++) {
+            Deposit storage deposit = deposits[i];
+
+            uint256 timeElapsed = block.timestamp - deposit.timestamp;
+            uint256 interest = _calulateInterest(deposit.amount, timeElapsed);
+            uint256 totalDepositValue = deposit.amount + interest;
+
+            if (totalDepositValue >= remainingAmount) {
+                deposit.amount = totalDepositValue - remainingAmount;
+                USDT.transfer(msg.sender, remainingAmount);
+                remainingAmount = 0;
+                break;
+            } else {
+                remainingAmount -= totalDepositValue;
+                USDT.transfer(msg.sender, totalDepositValue);
+                deposits[i] = deposits[deposits.length - 1];
+                deposits.pop();
+                length--; // Adjust the loop length
+                i--; // Adjust the fucking loop index
+            }
+        }
+
+        require(remainingAmount == 0, "BLP__InsufficientDepositToWithdraw"); // sanity check
+    }
 
     function getTotalValueOfDeposit() public view returns (uint256 totalAmount) {
         uint256 length = getDeposits(msg.sender).length;
