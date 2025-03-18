@@ -12,12 +12,19 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  */
 contract BLP is ReentrancyGuard {
 
+    uint256 public constant INTEREST_RATE = 8 ;
+    uint256 public constant SECONDS_IN_YEAR = 31536000;
+
     IERC20 public immutable wETH;
     IERC20 public immutable USDT;
     address public addressOfWeth;
     address public addressOfUsdt;
 
-    mapping(address user => uint256 amount) amountDepositedBy;
+    struct Deposit {
+    uint256 amount;
+    uint256 timestamp;}
+
+    mapping(address => Deposit[]) public userDeposits;
 
     ////////////// Event ////////////////
     event BLP_USDT_Deposited(uint256 indexed amount);
@@ -52,14 +59,31 @@ contract BLP is ReentrancyGuard {
     }
 
     ////////////////  Public functions //////////////
-    function depositUSDT(address token, uint256 amount) public validDepositToken(token) moreThanZero(amount) {
+    function provideUSDTForLiquidity(address token, uint256 amount) public validDepositToken(token) moreThanZero(amount) {
         USDT.transferFrom(msg.sender, address(this), amount);
-        amountDepositedBy[msg.sender] += amount;
+        userDeposits[msg.sender].push(Deposit(amount, block.timestamp));
         emit BLP_USDT_Deposited(amount);
     }
 
+    function withdrawLiquidityInUsd(uint256 amount) public{}
+
     /////////////// Internal functions /////////////
 
-    ////////////// Getter Functions /////////////
+    function _getTotalValueOfDeposit() internal returns(uint256 totalAmount){
+        uint256 interest ;
+        uint256 length = getDeposits(msg.sender).length;
+        for(uint256 i =0 ; i < length ; i++){
+            uint256 amount = getDeposits(msg.sender)[i].amount;
+            uint256 timestamp = getDeposits(msg.sender)[i].timestamp;
+            uint256 timeElapsed = block.timestamp - timestamp;
+            interest += (amount * timeElapsed * INTEREST_RATE)/SECONDS_IN_YEAR;
+            totalAmount += amount + interest;
+        }
+    }
 
+    ////////////// Getter Functions ///////////////
+
+    function getDeposits(address user) public returns ( Deposit[] memory){
+        return userDeposits[user];
+    }
 }

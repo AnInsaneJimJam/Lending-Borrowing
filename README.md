@@ -6,3 +6,4 @@
 4. Main issue is to check whether a person's position can be liquidated considered interest and latest price of collateral automatically
 5. Collateral should be atleast 150% of borrowed amount.
 
+ 
