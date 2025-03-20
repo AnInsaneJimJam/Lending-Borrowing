@@ -44,6 +44,8 @@ contract BLP is ReentrancyGuard {
     event BLP_USDT_Deposited(uint256 indexed amount);
     event BLP__USDT_Withdrawn(uint256 indexed amount);
     event BLP__WETH_Deposited(uint256 indexed amount);
+    event BLP__WETH_Withdrawn(uint256 indexed amount);
+    event BLP__USDT_Borrowed(uint256 indexed amount);
 
     ////////////// Error ////////////////
     error BLP__InvalidDepositTokenAddress(address token);
@@ -51,8 +53,10 @@ contract BLP is ReentrancyGuard {
     error BLP__AmountMustBeMoreThanZero();
     error BLP__InsufficentDepositToWithdraw();
     error BLP__LowCollaterizationRatio();
+    error BLP__InsufficientLiquidity();
     
     ///////////// Constructor ////////////
+    error BLP__InsufficentCollateralToWithdraw();
     constructor(address _weth, address _usdt, address _wethPriceFeeed, address _usdtPriceFeed) {
         wETH = IERC20(_weth);
         USDT = IERC20(_usdt);
@@ -138,6 +142,22 @@ contract BLP is ReentrancyGuard {
         emit BLP__WETH_Deposited(amount);
     }
 
+    function withdrawCollateral (address token, uint256 amount) public moreThanZero(amount) validCollateralToken(token){
+        require(collateralDeposited[msg.sender]>amount , BLP__InsufficentCollateralToWithdraw());
+        collateralDeposited[msg.sender] -= amount;
+        _revertIfColllaterizationRatioIsLow(msg.sender);
+        wETH.transfer(msg.sender,amount);
+        emit BLP__WETH_Withdrawn(amount);
+    }
+
+    function borrowUsdt (address token, uint256 amount) public moreThanZero(amount) validDepositToken(token) nonReentrant{
+        userDebt[msg.sender].push(Deposit(amount,block.timestamp));
+        _revertIfColllaterizationRatioIsLow(msg.sender);
+        require(USDT.balanceOf(address(this))> amount, BLP__InsufficientLiquidity());
+        USDT.transfer(msg.sender,amount);
+        emit BLP__USDT_Borrowed(amount);
+    }
+
     function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(token == addressOfUsdt ? usdtPriceFeed : wethPriceFeed);
         (, int256 price,,,) = priceFeed.latestRoundData();
@@ -160,6 +180,7 @@ contract BLP is ReentrancyGuard {
 
     function _revertIfColllaterizationRatioIsLow(address user) internal view{
         uint256 ratio = _calculateCollaterizationRatio(user);
+        // 1.5e18 = 15e17
         require(ratio > 15e17 , BLP__LowCollaterizationRatio());
     }
 
