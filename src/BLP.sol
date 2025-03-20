@@ -4,15 +4,20 @@ pragma solidity ^0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title A simple Borrow Lending Protocol
  * @author Anand Bansal
- * @notice This is a simple BLP with fixed borrowing and lending
+ * @notice This is a simple BLP with fixed borrowing and lending interest rate
+ * @notice Collateral will be wETH and lending and borrowing unit will be USDT
+ * @notice Liquidate function
  */
 contract BLP is ReentrancyGuard {
-    uint256 public constant INTEREST_RATE = 8;
-    uint256 public constant SECONDS_IN_YEAR = 31536000;
+    uint256 private constant INTEREST_RATE = 8;
+    uint256 private constant SECONDS_IN_YEAR = 31536000;
+    uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
+    uint256 private constant PRECISION = 1e18;
 
     IERC20 public immutable wETH;
     IERC20 public immutable USDT;
@@ -24,22 +29,37 @@ contract BLP is ReentrancyGuard {
         uint256 timestamp;
     }
 
+    struct Debt {
+        uint256 usdtBorrowed;
+        uint256 timestamp;
+    }
+
     mapping(address => Deposit[]) public userDeposits;
+    address wethPriceFeed; 
+    address usdtPriceFeed; 
+    mapping(address user =>  uint256 amount) public collateralDeposited;
+    mapping(address user => Debt[]) public userDebt;
 
     ////////////// Event ////////////////
     event BLP_USDT_Deposited(uint256 indexed amount);
+    event BLP__USDT_Withdrawn(uint256 indexed amount);
+    event BLP__WETH_Deposited(uint256 indexed amount);
 
     ////////////// Error ////////////////
     error BLP__InvalidDepositTokenAddress(address token);
     error BLP__InvalidCollateralTokenAddress(address token);
     error BLP__AmountMustBeMoreThanZero();
     error BLP__InsufficentDepositToWithdraw();
-
-    constructor(address _weth, address _usdt) {
+    error BLP__LowCollaterizationRatio();
+    
+    ///////////// Constructor ////////////
+    constructor(address _weth, address _usdt, address _wethPriceFeeed, address _usdtPriceFeed) {
         wETH = IERC20(_weth);
         USDT = IERC20(_usdt);
         addressOfWeth = _weth;
         addressOfUsdt = _usdt;
+        wethPriceFeed = _wethPriceFeeed;
+        usdtPriceFeed = _usdtPriceFeed;
     }
 
     ////////////////// Modifiers //////////////////
@@ -69,7 +89,7 @@ contract BLP is ReentrancyGuard {
         emit BLP_USDT_Deposited(amount);
     }
 
-    function withdrawLiquidityInUsd(uint256 amount) public nonReentrant moreThanZero(amount) {
+    function withdrawLiquidityInUsdt(uint256 amount) public nonReentrant moreThanZero(amount) {
         uint256 totalValue = getTotalValueOfDeposit();
         require(amount <= totalValue, "BLP__InsufficientDepositToWithdraw");
 
@@ -97,8 +117,8 @@ contract BLP is ReentrancyGuard {
                 i--; // Adjust the fucking loop index
             }
         }
-
         require(remainingAmount == 0, "BLP__InsufficientDepositToWithdraw"); // sanity check
+        emit BLP__USDT_Withdrawn(amount);
     }
 
     function getTotalValueOfDeposit() public view returns (uint256 totalAmount) {
@@ -111,11 +131,39 @@ contract BLP is ReentrancyGuard {
             totalAmount += amount + interest;
         }
     }
+
+    function depositCollateral (address token, uint256 amount) public moreThanZero(amount) validCollateralToken(token){
+        wETH.transferFrom(msg.sender,address(this),amount);
+        collateralDeposited[msg.sender] += amount;
+        emit BLP__WETH_Deposited(amount);
+    }
+
+    function getUsdValue(address token, uint256 amount) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(token == addressOfUsdt ? usdtPriceFeed : wethPriceFeed);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        // 1 ETH = 1000 USD
+        // The returned value from Chainlink will be 1000 * 1e8
+        // Most USD pairs have 8 decimals, so we will just pretend they all do
+        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
     /////////////// Internal functions /////////////
 
     function _calulateInterest(uint256 amount, uint256 timeElapsed) internal pure returns (uint256 interest) {
         interest += (amount * timeElapsed * INTEREST_RATE) / SECONDS_IN_YEAR;
     }
+
+    //Need to take care of interest on debt now
+    function _calculateCollaterizationRatio(address user) internal view returns(uint256 ratio){
+        ratio = (getUsdValue(addressOfUsdt,collateralDeposited[user])*1e18)/getUsdValue(addressOfUsdt, UsdtBorrowed[user]);
+        //should be greater than 1.5e18
+    }
+
+    function _revertIfColllaterizationRatioIsLow(address user) internal view{
+        uint256 ratio = _calculateCollaterizationRatio(user);
+        require(ratio > 15e17 , BLP__LowCollaterizationRatio());
+    }
+
+
 
     ////////////// Getter Functions ///////////////
 
